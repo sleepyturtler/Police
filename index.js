@@ -277,6 +277,53 @@ async function handleSpam(message, matchedMessages, spc) {
     addHistory(guildId, author.id, { guildId, userId: author.id, userTag: author.tag, type: 'spam_remove', reason: `Spam: ${matchedMessages.length}x`, issuedBy: client.user.tag, issuedAt: Date.now() });
 }
 
+// ── Cross-post protection (same message pasted across many channels) ───────
+// Separate from same-channel spam above: this catches things like referral-link ads
+// pasted into several different channels a few minutes apart, which spamTracker's short
+// windowMs would never catch since those messages are neither in the same channel nor
+// close together in time.
+const crossPostTracker = new Map(), crossPostCooldown = new Set();
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, entries] of crossPostTracker.entries()) {
+        const fresh = entries.filter(e => now - e.ts < 30 * 60 * 1000); // hard ceiling well above any configurable window
+        if (!fresh.length) crossPostTracker.delete(key); else crossPostTracker.set(key, fresh);
+    }
+}, 10 * 60 * 1000);
+async function getCrossPostConfig(guildId) { const cfg = await getConfig(guildId); return { enabled: true, count: 3, windowMs: 5 * 60 * 1000, windowDisplay: '5m', timeoutMs: 10 * 60 * 1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: 10, ...cfg.crossPostProt }; }
+async function handleCrossPost(guild, author, matchedEntries, cpc, matchType) {
+    const guildId = guild.id, key = `${guildId}-${author.id}`;
+    if (crossPostCooldown.has(key)) return;
+    crossPostCooldown.add(key); setTimeout(() => crossPostCooldown.delete(key), 5000);
+    const botMember = guild.members.me;
+    let deletedCount = 0;
+    if (cpc.deleteMsg) {
+        const byChannel = new Map();
+        for (const e of matchedEntries) { if (e.hasReactions) continue; if (!byChannel.has(e.channelId)) byChannel.set(e.channelId, []); byChannel.get(e.channelId).push(e.msgId); }
+        for (const [chId, msgIds] of byChannel) {
+            const ch = guild.channels.cache.get(chId);
+            if (!ch || !botMember.permissionsIn(ch).has(PermissionFlagsBits.ManageMessages)) continue;
+            try { await ch.bulkDelete(msgIds); deletedCount += msgIds.length; }
+            catch { for (const id of msgIds) { const msg = await ch.messages.fetch(id).catch(() => null); if (msg) { await msg.delete().catch(() => {}); deletedCount++; } } }
+        }
+    }
+    let timedOut = false;
+    if (cpc.timeoutMs && botMember.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+        const member = guild.members.cache.get(author.id) ?? await guild.members.fetch(author.id).catch(() => null);
+        if (member && !member.permissions.has(PermissionFlagsBits.Administrator)) {
+            timedOut = await member.timeout(cpc.timeoutMs, 'Cross-channel spam detection').then(() => true).catch(() => false);
+            if (timedOut) saveActiveTimeout(guildId, author.id, { guildId, userId: author.id, userTag: author.tag, reason: 'Cross-channel spam detection', issuedBy: client.user.tag, issuedAt: Date.now(), expiresAt: Date.now() + cpc.timeoutMs, durationDisplay: cpc.timeoutDisplay });
+        }
+    }
+    const distinctChannels = new Set(matchedEntries.map(e => e.channelId)).size, what = matchType === 'image' ? 'image' : 'message';
+    const cfg = await getConfig(guildId);
+    const E2 = (c, t) => new EmbedBuilder().setColor(c).setTitle(t).setTimestamp();
+    const contentValue = matchType === 'image' ? `[image attachment, hash \`${matchedEntries[0]?.imgHash ?? 'unknown'}\`]` : (matchedEntries[0]?.content?.slice(0, 200) || '(empty)');
+    if (cfg.warnDm !== false) author.send({ embeds: [E2('#ff6600','Your messages were removed').setDescription(`You posted the same ${what} across **${distinctChannels}** channels in **${guild.name}**, which was detected as cross-channel spam.`).addFields(...(timedOut ? [{ name: 'Consequence', value: `Timed out for ${cpc.timeoutDisplay}`, inline: true }] : [])).setFooter({ text: 'If you believe this is a mistake, contact a moderator' })] }).catch(() => {});
+    logMod(guild, guildId, E2('#ff6600','Cross-Channel Spam Auto-Removed').addFields({ name: 'User', value: `${author} (${author.tag})`, inline: true }, { name: 'Type', value: matchType === 'image' ? 'Image' : 'Text', inline: true }, { name: 'Channels', value: `${distinctChannels}`, inline: true }, { name: 'Messages Removed', value: `${deletedCount}`, inline: true }, ...(timedOut ? [{ name: 'Timeout', value: cpc.timeoutDisplay, inline: true }] : []), { name: 'Content', value: contentValue }));
+    addHistory(guildId, author.id, { guildId, userId: author.id, userTag: author.tag, type: 'crosspost_remove', reason: `Cross-posted ${what} across ${distinctChannels} channels`, issuedBy: client.user.tag, issuedAt: Date.now() });
+}
+
 // ── Warning timers ─────────────────────────────────────────────────────────
 const warningTimers = new Map(), pendingUnwarns = new Map(), banTimers = new Map();
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
@@ -498,7 +545,7 @@ const helpPages = {
     help_escalation: new EmbedBuilder().setColor('#ff9900').setTitle('Escalation Commands').addFields({ name: '/escalation set', value: 'Set a threshold: N warnings at level X → auto-escalate to level X+1.' }, { name: '/escalation cap', value: 'Set the maximum escalation level.' }, { name: '/escalation timeout', value: 'N warnings at level X → auto level X+1 + a timeout.' }, { name: '/escalation view', value: 'View all active escalation rules. Use the dropdowns/buttons here to remove thresholds, timeouts, or the level cap.' }).setFooter({ text: 'Use the buttons to explore other categories' }),
     help_notes: new EmbedBuilder().setColor('#9b59b6').setTitle('Note Commands').addFields({ name: '/note add', value: 'Add a private mod note to a user. Not visible to the user.' }, { name: '/note list', value: 'List all notes on a user, with timestamps and which mod added them.' }, { name: '/note remove', value: 'View all notes on a user, with timestamps and which mod added them. Use the dropdown here to remove a note.' }).setFooter({ text: 'Use the buttons to explore other categories' }),
     help_storage: new EmbedBuilder().setColor('#5865F2').setTitle('Database Storage').setDescription('Police Bot uses PostgreSQL to store all data persistently. Nothing is lost on restarts.').addFields({ name: 'warnings', value: 'Active warnings with expiry timestamps, user IDs, role IDs, and channel IDs.' }, { name: 'history', value: 'Full mod history per server — every warn, kick, and ban.' }, { name: 'configs', value: 'Per-server config: warning levels, roles, durations, escalation rules, access role.' }, { name: 'notes', value: 'Private mod notes per user.' }, { name: 'scam_hashes / global_scam_hashes', value: 'Registered scam image hashes, per-guild and global.' }).setFooter({ text: 'Use the buttons to explore other categories' }),
-    help_features: new EmbedBuilder().setColor('#9b59b6').setTitle('Other Features').addFields({ name: 'Scam protection', value: 'Upload known scam images — any similar image posted is auto-removed.' }, { name: 'Spam protection', value: 'Detects repeated/similar messages and auto-removes with configurable timeouts.' }, { name: 'Rejoin protection', value: 'If a warned user leaves and rejoins, their warning roles are reapplied.' }, { name: 'Timer restoration', value: 'On bot restart, all active warning timers are restored from the database.' }, { name: '/invite', value: 'Get a pre-configured invite link with all required permissions.' }).setFooter({ text: 'Use the buttons to explore other categories' }),
+    help_features: new EmbedBuilder().setColor('#9b59b6').setTitle('Other Features').addFields({ name: 'Scam protection', value: 'Upload known scam images — any similar image posted is auto-removed.' }, { name: 'Spam protection', value: 'Detects repeated/similar messages and auto-removes with configurable timeouts.' }, { name: 'Cross-channel spam protection', value: 'Detects the same message or image pasted across multiple different channels (e.g. referral/ad spam, unregistered scam screenshots) — see `/crosspost config`.' }, { name: 'Rejoin protection', value: 'If a warned user leaves and rejoins, their warning roles are reapplied.' }, { name: 'Timer restoration', value: 'On bot restart, all active warning timers are restored from the database.' }, { name: '/invite', value: 'Get a pre-configured invite link with all required permissions.' }).setFooter({ text: 'Use the buttons to explore other categories' }),
 };
 const helpOverviewEmbed = () => new EmbedBuilder().setColor('#5865F2').setTitle('Police Bot').setDescription(`I'm just your friendly neighbourhood policemen, but I do have some tricks up my sleeve. Press the buttons below to learn about my commands.\n\n📌 **Support Server:** ${SUPPORT_SERVER_URL}`).setFooter({ text: 'Mod commands require the configured access role or Administrator' });
 function helpRows(active = '') {
@@ -560,6 +607,9 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('spam').setDescription('Configure spam protection')
             .addSubcommand(s => s.setName('config').setDescription('Configure spam detection').addBooleanOption(o => o.setName('enabled').setDescription('Enable or disable')).addBooleanOption(o => o.setName('delete').setDescription('Delete spam messages')).addIntegerOption(o => o.setName('count').setDescription('Messages to trigger (default 5)').setMinValue(2).setMaxValue(20)).addIntegerOption(o => o.setName('window').setDescription('Time window in seconds (default 10)').setMinValue(3).setMaxValue(60)).addStringOption(o => o.setName('timeout').setDescription('Timeout duration or "none"')).addIntegerOption(o => o.setName('similarity').setDescription('Similarity % (default 70)').setMinValue(50).setMaxValue(100)))
             .addSubcommand(s => s.setName('view').setDescription('View spam protection settings')),
+        new SlashCommandBuilder().setName('crosspost').setDescription('Configure cross-channel spam protection (same message pasted in many channels)')
+            .addSubcommand(s => s.setName('config').setDescription('Configure cross-channel detection').addBooleanOption(o => o.setName('enabled').setDescription('Enable or disable')).addBooleanOption(o => o.setName('delete').setDescription('Delete the cross-posted messages')).addIntegerOption(o => o.setName('count').setDescription('Distinct channels to trigger (default 3)').setMinValue(2).setMaxValue(20)).addIntegerOption(o => o.setName('window').setDescription('Time window in seconds (default 300)').setMinValue(10).setMaxValue(1800)).addStringOption(o => o.setName('timeout').setDescription('Timeout duration or "none"')).addIntegerOption(o => o.setName('similarity').setDescription('Text similarity % (default 85)').setMinValue(50).setMaxValue(100)).addBooleanOption(o => o.setName('match_images').setDescription('Also match cross-posted images (default true)')).addIntegerOption(o => o.setName('image_threshold').setDescription('Image match strictness, lower = stricter (default 10)').setMinValue(0).setMaxValue(20)))
+            .addSubcommand(s => s.setName('view').setDescription('View cross-channel protection settings')),
     ].map(c => c.toJSON());
     client.application.commands.set(commands);
     console.log('✅ Commands registered');
@@ -706,15 +756,46 @@ client.on('messageCreate', async message => {
 
 // ── Spam detection ─────────────────────────────────────────────────────────
 client.on('messageCreate', async message => {
-    if (!message.guild || message.author.bot || !message.content) return;
-    const guildId = message.guild.id, spc2 = await getSpamConfig(guildId);
-    if (!spc2.enabled) return;
-    const spamKey = `${guildId}-${message.author.id}`, now = Date.now();
-    const fresh = (spamTracker.get(spamKey) ?? []).filter(e => now - e.ts < spc2.windowMs);
-    fresh.push({ content: normalise(message.content), msgId: message.id, channelId: message.channel.id, ts: now, hasReactions: message.reactions.cache.size > 0 });
-    spamTracker.set(spamKey, fresh);
-    const latest = normalise(message.content), matches = fresh.filter(e => e.channelId === message.channel.id && similarity(e.content, latest) >= spc2.similarityThreshold);
-    if (matches.length >= spc2.count) { spamTracker.delete(spamKey); await handleSpam(message, matches, spc2); }
+    if (!message.guild || message.author.bot) return;
+    const imageAtts = [...message.attachments.values()].filter(a => (/\.(png|jpg|jpeg|gif|webp)$/i.test(a.name ?? '') || a.contentType?.startsWith('image/')) && a.size <= MAX_SCAM_IMAGE_BYTES);
+    if (!message.content && !imageAtts.length) return;
+    const guildId = message.guild.id, now = Date.now(), latest = message.content ? normalise(message.content) : null;
+    if (latest) {
+        const spc2 = await getSpamConfig(guildId);
+        if (spc2.enabled) {
+            const spamKey = `${guildId}-${message.author.id}`;
+            const fresh = (spamTracker.get(spamKey) ?? []).filter(e => now - e.ts < spc2.windowMs);
+            fresh.push({ content: latest, msgId: message.id, channelId: message.channel.id, ts: now, hasReactions: message.reactions.cache.size > 0 });
+            spamTracker.set(spamKey, fresh);
+            const matches = fresh.filter(e => e.channelId === message.channel.id && similarity(e.content, latest) >= spc2.similarityThreshold);
+            if (matches.length >= spc2.count) { spamTracker.delete(spamKey); await handleSpam(message, matches, spc2); return; }
+        }
+    }
+    // Cross-channel: same message (or same image) copy-pasted into several different channels, often
+    // minutes apart (referral/affiliate ads, scam screenshots not caught by the registered-hash system
+    // below because they were never registered) — same-channel spam above won't catch this.
+    const cpc = await getCrossPostConfig(guildId);
+    if (!cpc.enabled) return;
+    let imgHash = null;
+    if (cpc.matchImages && imageAtts.length) {
+        try { imgHash = await dHash(await fetchImageBuffer(imageAtts[0].url)); } catch (e) { console.error('crosspost: hash failed:', e.message); }
+    }
+    const hasText = latest && latest.length >= 20;
+    if (!hasText && !imgHash) return;
+    const cpKey = `${guildId}-${message.author.id}`;
+    const freshCp = (crossPostTracker.get(cpKey) ?? []).filter(e => now - e.ts < cpc.windowMs);
+    freshCp.push({ content: hasText ? latest : null, imgHash, msgId: message.id, channelId: message.channel.id, ts: now, hasReactions: message.reactions.cache.size > 0 });
+    crossPostTracker.set(cpKey, freshCp);
+    if (hasText) {
+        const textMatches = freshCp.filter(e => e.content && similarity(e.content, latest) >= cpc.similarityThreshold);
+        const distinctChannels = new Set(textMatches.map(e => e.channelId)).size;
+        if (distinctChannels >= cpc.count) { crossPostTracker.delete(cpKey); await handleCrossPost(message.guild, message.author, textMatches, cpc, 'text'); return; }
+    }
+    if (imgHash) {
+        const imageMatches = freshCp.filter(e => e.imgHash && hammingDistance(e.imgHash, imgHash) <= cpc.imageThreshold);
+        const distinctChannels = new Set(imageMatches.map(e => e.channelId)).size;
+        if (distinctChannels >= cpc.count) { crossPostTracker.delete(cpKey); await handleCrossPost(message.guild, message.author, imageMatches, cpc, 'image'); }
+    }
 });
 
 // ── Interactions ───────────────────────────────────────────────────────────
@@ -971,7 +1052,7 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, guildId } = interaction;
     if (!interaction.guild) return interaction.reply({ content: '❌ Server only.', flags: [MessageFlags.Ephemeral] });
-    const restricted = ['config','warning','timeout','kick','ban','note','userinfo','escalation','scam','spam','messages'];
+    const restricted = ['config','warning','timeout','kick','ban','note','userinfo','escalation','scam','spam','crosspost','messages'];
     if (restricted.includes(commandName) && !await hasCommandPermission(interaction, guildId)) {
         const cfg = await getConfig(guildId);
         return interaction.reply({ content: `❌ No permission.\n\n**Required:** Administrator OR ${cfg.accessRoleId ? `<@&${cfg.accessRoleId}>` : 'no role configured'}\n\nAsk an admin to run \`/config access\`.`, flags: [MessageFlags.Ephemeral] });
@@ -1132,6 +1213,7 @@ client.on('interactionCreate', async interaction => {
             else if (e.type === 'timeout_remove') embed.addFields({ name: `Timeout Removed — ${dateStr}`, value: `by ${e.issuedBy}\n${e.reason}` });
             else if (e.type === 'scam_remove') embed.addFields({ name: `Scam Message Removed — ${dateStr}`, value: `by ${e.issuedBy}\n${e.reason}` });
             else if (e.type === 'spam_remove') embed.addFields({ name: `Spam Messages Removed — ${dateStr}`, value: `by ${e.issuedBy}\n${e.reason}` });
+            else if (e.type === 'crosspost_remove') embed.addFields({ name: `Cross-Channel Spam Removed — ${dateStr}`, value: `by ${e.issuedBy}\n${e.reason}` });
             else { const s = e.endReason==='expired'?'Expired':e.endReason==='manual'?'Removed':'Active'; embed.addFields({ name: `Level ${e.level} — ${e.roleName} — ${dateStr}`, value: `${s} • by ${e.issuedBy}\n${e.reason}` }); }
         }
         await interaction.editReply({ embeds: [embed] });
@@ -1283,6 +1365,30 @@ client.on('interactionCreate', async interaction => {
         } else {
             const cfg = await getConfig(guildId);
             await reply({ embeds: [spamEmbed(cfg.spamProt)], flags: [MessageFlags.Ephemeral] });
+        }
+    }
+    else if (commandName === 'crosspost') {
+        const sub = interaction.options.getSubcommand();
+        const cpEmbed = (cp) => { const s = { enabled: true, count: 3, windowMs: 5*60*1000, timeoutMs: 10*60*1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: 10, ...cp }; return E('#ff6600','Cross-Channel Spam Protection Config').setDescription('Catches the same message or image copy-pasted into multiple different channels (e.g. referral/ad links, unregistered scam screenshots).').addFields({ name: 'Detection', value: s.enabled?'Enabled':'Disabled', inline: true }, { name: 'Trigger', value: `${s.count} channels within ${Math.round(s.windowMs/1000)}s`, inline: true }, { name: 'Text Similarity', value: `${Math.round(s.similarityThreshold*100)}%`, inline: true }, { name: 'Image Matching', value: s.matchImages ? `Enabled (threshold ${s.imageThreshold})` : 'Disabled', inline: true }, { name: 'Delete Messages', value: s.deleteMsg?'Yes':'No', inline: true }, { name: 'Timeout', value: s.timeoutMs?s.timeoutDisplay:'None', inline: true }); };
+        if (sub === 'config') {
+            const enabled = interaction.options.getBoolean('enabled'), del = interaction.options.getBoolean('delete'), count = interaction.options.getInteger('count'), window = interaction.options.getInteger('window'), toStr = interaction.options.getString('timeout'), simPct = interaction.options.getInteger('similarity'), matchImages = interaction.options.getBoolean('match_images'), imgThresh = interaction.options.getInteger('image_threshold');
+            const cfg = await getConfig(guildId); cfg.crossPostProt ??= {};
+            if (enabled !== null) cfg.crossPostProt.enabled = enabled;
+            if (del !== null) cfg.crossPostProt.deleteMsg = del;
+            if (count !== null) cfg.crossPostProt.count = count;
+            if (window !== null) cfg.crossPostProt.windowMs = window * 1000;
+            if (simPct !== null) cfg.crossPostProt.similarityThreshold = simPct / 100;
+            if (matchImages !== null) cfg.crossPostProt.matchImages = matchImages;
+            if (imgThresh !== null) cfg.crossPostProt.imageThreshold = imgThresh;
+            if (toStr !== null) {
+                if (toStr.toLowerCase() === 'none') { cfg.crossPostProt.timeoutMs = null; cfg.crossPostProt.timeoutDisplay = 'None'; }
+                else { const dur = parseDuration(toStr); if (!dur || dur.isForever) return reply('❌ Invalid timeout.'); if (dur.totalMs > MAX_TIMEOUT_MS) return reply('❌ Timeouts cannot exceed 28 days.'); cfg.crossPostProt.timeoutMs = dur.totalMs; cfg.crossPostProt.timeoutDisplay = formatDuration(dur.days, dur.hours, dur.minutes, dur.seconds); }
+            }
+            saveConfig(guildId, cfg);
+            await reply({ embeds: [cpEmbed(cfg.crossPostProt)], flags: [MessageFlags.Ephemeral] });
+        } else {
+            const cfg = await getConfig(guildId);
+            await reply({ embeds: [cpEmbed(cfg.crossPostProt)], flags: [MessageFlags.Ephemeral] });
         }
     }
     else if (commandName === 'messages') {
