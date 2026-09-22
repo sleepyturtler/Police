@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, RoleSelectMenuBuilder, StringSelectMenuBuilder, ChannelSelectMenuBuilder, ChannelType, ActivityType, MessageFlags, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Options, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, RoleSelectMenuBuilder, StringSelectMenuBuilder, ChannelSelectMenuBuilder, ChannelType, ActivityType, MessageFlags, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { Pool } = require('pg');
 const dns = require('dns'); dns.setDefaultResultOrder('ipv4first');
 const http = require('http'), https = require('https');
@@ -9,7 +9,19 @@ const sharp = require('sharp');
 sharp.cache(false);
 sharp.concurrency(parseInt(process.env.SHARP_CONCURRENCY) || 2);
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+// discord.js v14 only caps MessageManager by default (200/channel) — GuildMemberManager and
+// UserManager default to Infinity. Every message author and every member ever resolved via a
+// command (kick/ban/timeout/warning/scam/spam/crosspost, all of it) gets cached forever with
+// no eviction, which is the actual driver of the slow multi-hour memory climb: it grows with
+// cumulative traffic, not with any single event, and only resets on restart. Bounding these
+// doesn't change command behavior — the target of any command is freshly resolved by the
+// interaction itself and lands in the cache right when the handler runs, regardless of size.
+const MEMBER_CACHE_LIMIT = parseInt(process.env.MEMBER_CACHE_LIMIT) || 500;   // per guild
+const USER_CACHE_LIMIT = parseInt(process.env.USER_CACHE_LIMIT) || 2000;     // global, shared across all guilds
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+    makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, GuildMemberManager: MEMBER_CACHE_LIMIT, UserManager: USER_CACHE_LIMIT }),
+});
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 const OWNER_ID = '1193912522999336960';
 const SUPPORT_SERVER_URL = 'https://discord.gg/Qrp82cRhUW';
@@ -176,10 +188,17 @@ async function generateCropHashes(buffer) {
 function fetchImageBuffer(url) {
     return new Promise((resolve, reject) => {
         const mod = url.startsWith('https') ? https : http;
-        mod.get(url, { headers: { 'User-Agent': 'PoliceBot/1.0' } }, res => {
-            if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-            const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve(Buffer.concat(chunks))); res.on('error', reject);
-        }).on('error', reject);
+        const req = mod.get(url, { headers: { 'User-Agent': 'PoliceBot/1.0' }, timeout: 15_000 }, res => {
+            if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
+            let total = 0; const chunks = [];
+            res.on('data', c => {
+                total += c.length;
+                if (total > MAX_SCAM_IMAGE_BYTES) { res.destroy(); req.destroy(); return reject(new Error('response exceeded size cap')); }
+                chunks.push(c);
+            });
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+        }).on('timeout', () => req.destroy(new Error('request timed out'))).on('error', reject);
     });
 }
 const scamHashCache = new Map();
@@ -556,7 +575,7 @@ function helpRows(active = '') {
 // ── Bot ready ──────────────────────────────────────────────────────────────
 client.once('ready', async () => {
     console.log(`✅ Police bot online as ${client.user.tag}`);
-    client.user.setPresence({ activities: [{ name: 'Monitoring the security cameras', type: ActivityType.Watching }], status: 'online' });
+    client.user.setPresence({ activities: [{ name: 'Monitoring the security cameras.', type: ActivityType.Watching }], status: 'online' });
     const commands = [
         new SlashCommandBuilder().setName('invite').setDescription('Get a link to invite this bot to another server'),
         new SlashCommandBuilder().setName('warning').setDescription('Manage warnings')
@@ -1240,7 +1259,7 @@ client.on('interactionCreate', async interaction => {
         if (!botMember.permissions.has(PermissionFlagsBits.BanMembers)) return reply('❌ I need the "Ban Members" permission.');
         if (sub === 'give') {
             const user = interaction.options.getUser('user'), member = interaction.guild.members.cache.get(user.id);
-            const reason = interaction.options.getString('reason').slice(0,512).replace(/[ -]/g,''), deleteDays = interaction.options.getInteger('delete_days') ?? 0;
+            const reason = interaction.options.getString('reason').slice(0,512).replace(/[\x00-\x1F\x7F]/g,''), deleteDays = interaction.options.getInteger('delete_days') ?? 0;
             const durationStr = interaction.options.getString('duration'), dur = durationStr ? parseDuration(durationStr) : null;
             const deleteMessagesStr = interaction.options.getString('delete_messages');
             const delMsgDur = deleteMessagesStr ? parseDuration(deleteMessagesStr) : null;
