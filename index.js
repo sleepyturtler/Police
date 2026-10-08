@@ -18,9 +18,15 @@ sharp.concurrency(parseInt(process.env.SHARP_CONCURRENCY) || 2);
 // interaction itself and lands in the cache right when the handler runs, regardless of size.
 const MEMBER_CACHE_LIMIT = parseInt(process.env.MEMBER_CACHE_LIMIT) || 500;   // per guild
 const USER_CACHE_LIMIT = parseInt(process.env.USER_CACHE_LIMIT) || 2000;     // global, shared across all guilds
+// discord.js keeps the last 200 messages per channel by default. With the MessageContent intent each
+// cached message holds its full text, embeds and attachment data, and the total scales with how many
+// channels are active. Nothing in this bot reads the message cache: the spam and cross-post trackers
+// keep their own small records, and every delete goes through the API by id. 0 disables it.
+// (Not parseInt(...) || default, because 0 is a valid value here.)
+const MESSAGE_CACHE_LIMIT = Number.isFinite(parseInt(process.env.MESSAGE_CACHE_LIMIT)) ? parseInt(process.env.MESSAGE_CACHE_LIMIT) : 0; // per channel
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-    makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, GuildMemberManager: MEMBER_CACHE_LIMIT, UserManager: USER_CACHE_LIMIT }),
+    makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: MESSAGE_CACHE_LIMIT, GuildMemberManager: MEMBER_CACHE_LIMIT, UserManager: USER_CACHE_LIMIT }),
 });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 const OWNER_ID = '1193912522999336960';
@@ -1479,6 +1485,32 @@ client.on('interactionCreate', async interaction => {
       } catch {}
   }
 });
+
+// ── Memory diagnostics ─────────────────────────────────────────────────────
+// Logs one line every few minutes so a slow climb can be traced to a cause. Read it like this:
+//   rss up, heapUsed flat           -> native memory (sharp/libvips, buffers), not a JS object leak
+//   heapUsed up with a cache count  -> that cache is the leak (users, members, msgs)
+//   heapUsed up with a Map count    -> that tracker Map is the leak
+//   arrayBuffers/external up        -> image buffers or sockets not being released
+// Set DIAG_INTERVAL_MIN=0 to turn it off.
+const DIAG_INTERVAL_MIN = Number.isFinite(parseInt(process.env.DIAG_INTERVAL_MIN)) ? parseInt(process.env.DIAG_INTERVAL_MIN) : 10;
+function logMemoryDiagnostics() {
+    const mb = n => (n / 1048576).toFixed(1), m = process.memoryUsage();
+    let members = 0, msgs = 0;
+    for (const g of client.guilds.cache.values()) members += g.members.cache.size;
+    for (const ch of client.channels.cache.values()) if (ch.messages?.cache) msgs += ch.messages.cache.size;
+    let sharpInfo = '';
+    try { const c = sharp.counters(), k = sharp.cache(); sharpInfo = ` | sharp queue=${c.queue} proc=${c.process} cacheItems=${k.items?.current ?? 0}`; } catch {}
+    console.log(
+        `📊 mem rss=${mb(m.rss)}MB heapUsed=${mb(m.heapUsed)}MB heapTotal=${mb(m.heapTotal)}MB external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB` +
+        ` | guilds=${client.guilds.cache.size} users=${client.users.cache.size} members=${members} msgs=${msgs}` +
+        ` | maps config=${configCache.size} warn=${activeWarnings.size} timeouts=${activeTimeouts.size} scamHash=${scamHashCache.size} nearMatch=${pendingNearMatches.size}` +
+        ` spam=${spamTracker.size} spamCd=${spamCooldown.size} cross=${crossPostTracker.size} crossCd=${crossPostCooldown.size}` +
+        ` warnTimers=${warningTimers.size} unwarns=${pendingUnwarns.size} banTimers=${banTimers.size}` +
+        sharpInfo + ` | up=${Math.round(process.uptime() / 60)}m`
+    );
+}
+if (DIAG_INTERVAL_MIN > 0) setInterval(logMemoryDiagnostics, DIAG_INTERVAL_MIN * 60 * 1000);
 
 process.on('unhandledRejection', e => console.error('⚠️ Unhandled rejection:', e));
 client.on('error', e => console.error('⚠️ Discord client error:', e));
