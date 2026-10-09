@@ -32,6 +32,12 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 const OWNER_ID = '1193912522999336960';
 const SUPPORT_SERVER_URL = 'https://discord.gg/Qrp82cRhUW';
 const MAX_SCAM_IMAGE_BYTES = parseInt(process.env.MAX_SCAM_IMAGE_BYTES) || 15 * 1024 * 1024; // skip decoding unusually large attachments; scam images are typically small screenshots anyway
+// The byte cap above limits the file, not the decoded size: a small PNG can expand to 60MB+ of raw pixels.
+// This caps decoded pixels (16 megapixels is roughly a 4000x4000 image; phone screenshots are 2 to 3).
+// sharp checks it from the header, so an oversized image is rejected before any pixel memory is allocated.
+// Note: an image over this limit is not scanned at all, so raise it if you ever need to catch bigger ones.
+const MAX_SCAM_IMAGE_PIXELS = parseInt(process.env.MAX_SCAM_IMAGE_PIXELS) || 16_000_000;
+const openImage = buf => sharp(buf, { limitInputPixels: MAX_SCAM_IMAGE_PIXELS, sequentialRead: true });
 
 // ── DB ─────────────────────────────────────────────────────────────────────
 async function initDB() {
@@ -155,7 +161,7 @@ async function bulkDeleteInRange(channel, { userId, since, maxCount = Infinity }
 
 // ── Scam protection ────────────────────────────────────────────────────────
 async function dHash(buffer) {
-    const result = await sharp(buffer).resize(9, 8, { fit: 'fill' }).greyscale().raw().toBuffer({ resolveWithObject: true });
+    const result = await openImage(buffer).resize(9, 8, { fit: 'fill' }).greyscale().raw().toBuffer({ resolveWithObject: true });
     const data = result.data; let hash = 0n;
     for (let row = 0; row < 8; row++) for (let col = 0; col < 8; col++) if (data[row * 9 + col] > data[row * 9 + col + 1]) hash |= (1n << BigInt(row * 8 + col));
     return hash.toString(16).padStart(16, '0');
@@ -173,7 +179,7 @@ function hammingDistance(a, b) { let diff = BigInt('0x' + a) ^ BigInt('0x' + b),
 // large the original attachment is.
 async function generateCropHashes(buffer) {
     let small;
-    try { small = await sharp(buffer).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toBuffer(); } catch { return []; }
+    try { small = await openImage(buffer).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toBuffer(); } catch { return []; }
     let meta; try { meta = await sharp(small).metadata(); } catch { return []; }
     const { width, height } = meta;
     if (!width || !height || width < 16 || height < 16) return [];
@@ -228,6 +234,25 @@ async function removeScamHash(guildId, id) {
 }
 async function getImageDimensions(buffer) {
     try { const meta = await sharp(buffer).metadata(); return { width: meta.width, height: meta.height }; } catch { return null; }
+}
+// Two message listeners (scam check and cross-post check) both need the hash of the same attachment.
+// Sharing one in-flight download+decode between them halves the image work per attachment.
+// Entries are dropped after a short time so the buffer is not kept around, and failures are not cached.
+const imageInfoCache = new Map(), imageStats = { hashed: 0, skippedPixels: 0, failed: 0 };
+const IMAGE_INFO_TTL_MS = 15_000, IMAGE_INFO_MAX = 40;
+function getImageInfo(att) {
+    const hit = imageInfoCache.get(att.id);
+    if (hit) return hit;
+    if (imageInfoCache.size >= IMAGE_INFO_MAX) imageInfoCache.delete(imageInfoCache.keys().next().value);
+    const promise = fetchImageBuffer(att.url).then(async buffer => {
+        try { const hash = await dHash(buffer); imageStats.hashed++; return { buffer, hash }; }
+        catch (e) { if (/pixel limit/i.test(e.message)) imageStats.skippedPixels++; else imageStats.failed++; throw e; }
+    });
+    imageInfoCache.set(att.id, promise);
+    const drop = () => imageInfoCache.delete(att.id);
+    promise.catch(drop);
+    setTimeout(drop, IMAGE_INFO_TTL_MS).unref();
+    return promise;
 }
 async function addGlobalScamHash(hash, label, addedBy) {
     const res = await pool.query('INSERT INTO global_scam_hashes (hash, label, added_by, added_at) VALUES ($1, $2, $3, $4) RETURNING id', [hash, label, addedBy, Date.now()]);
@@ -714,8 +739,7 @@ client.on('messageCreate', async message => {
     const botMember = message.guild.members.me;
     const canTimeout = botMember.permissions.has(PermissionFlagsBits.ModerateMembers);
     for (const att of attachments) {
-        let buffer; try { buffer = await fetchImageBuffer(att.url); } catch (e) { console.error('scam: fetch failed:', e.message); continue; }
-        let imgHash; try { imgHash = await dHash(buffer); } catch (e) { console.error('scam: hash failed:', e.message); continue; }
+        let buffer, imgHash; try { ({ buffer, hash: imgHash } = await getImageInfo(att)); } catch (e) { console.error('scam: fetch/hash failed:', e.message); continue; }
         let match = null, isGlobal = false, matchDistance = 0, matchedVia = 'full image';
         for (const entry of globalHashes) { const dist = hammingDistance(imgHash, entry.hash); if (dist <= 10) { match = entry; isGlobal = true; matchDistance = dist; break; } }
         if (!match) { for (const entry of hashes) { const dist = hammingDistance(imgHash, entry.hash); if (dist <= spc.threshold) { match = entry; matchDistance = dist; break; } } }
@@ -803,7 +827,7 @@ client.on('messageCreate', async message => {
     if (!cpc.enabled) return;
     let imgHash = null;
     if (cpc.matchImages && imageAtts.length) {
-        try { imgHash = await dHash(await fetchImageBuffer(imageAtts[0].url)); } catch (e) { console.error('crosspost: hash failed:', e.message); }
+        try { imgHash = (await getImageInfo(imageAtts[0])).hash; } catch (e) { console.error('crosspost: hash failed:', e.message); }
     }
     const hasText = latest && latest.length >= 20;
     if (!hasText && !imgHash) return;
@@ -1507,7 +1531,7 @@ function logMemoryDiagnostics() {
         ` | maps config=${configCache.size} warn=${activeWarnings.size} timeouts=${activeTimeouts.size} scamHash=${scamHashCache.size} nearMatch=${pendingNearMatches.size}` +
         ` spam=${spamTracker.size} spamCd=${spamCooldown.size} cross=${crossPostTracker.size} crossCd=${crossPostCooldown.size}` +
         ` warnTimers=${warningTimers.size} unwarns=${pendingUnwarns.size} banTimers=${banTimers.size}` +
-        sharpInfo + ` | up=${Math.round(process.uptime() / 60)}m`
+        sharpInfo + ` | img hashed=${imageStats.hashed} overPixelCap=${imageStats.skippedPixels} failed=${imageStats.failed} inflight=${imageInfoCache.size}` + ` | up=${Math.round(process.uptime() / 60)}m`
     );
 }
 if (DIAG_INTERVAL_MIN > 0) setInterval(logMemoryDiagnostics, DIAG_INTERVAL_MIN * 60 * 1000);
