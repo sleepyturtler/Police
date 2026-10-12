@@ -1,6 +1,6 @@
 {
   "name": "Police",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "The best moderation bot",
   "main": "index.js",
   "scripts": {
