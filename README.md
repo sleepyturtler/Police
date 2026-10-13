@@ -41,3 +41,8 @@ The ultimate moderation bot for discord.
 - **/help:** Shows all commands available.
 - **/mywarnings:** Shows you how much time is left on your warnings.
 - **/invite:** Creates an invite for the bot with all the permissions the bot needs.
+
+# AI Use:
+- The bot is mostly vibecoded with Claude, however
+- A lot of effort, manual bugtesting and time has went into making this bot super polished.
+- The bot is something I am passionate about, and me using AI does not change the fact that I worked very hard to make it.
