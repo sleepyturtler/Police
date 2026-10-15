@@ -1,7 +1,7 @@
 // Routes slash commands and components to their handlers.
 const { EmbedBuilder, MessageFlags } = require('discord.js');
 const { client } = require('./client');
-const { handleComponents } = require('./components');
+const { handleComponents } = require('./component-handlers');
 const { hasCommandPermission } = require('./helpers');
 const { getConfig } = require('./db');
 const { runHelp, runInvite } = require('./commands/general');

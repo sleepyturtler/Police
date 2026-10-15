@@ -67,7 +67,7 @@ async function runMyWarnings(ctx) {
 async function runWarningList(ctx) {
     const { guildId, reply } = ctx;
     const { embed, totalPages, page } = buildWarnlistEmbed(guildId, 0);
-    await reply({ embeds: [embed], components: warnlistRow(page, totalPages, guildId) });
+    await reply({ embeds: [embed], components: warnlistRow(page, totalPages, guildId), flags: [MessageFlags.Ephemeral] });
 }
 
 async function runWarningHistory(ctx) {
