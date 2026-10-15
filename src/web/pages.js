@@ -22,11 +22,11 @@ function buildLanding(ctx) {
     const statusLine = ctx.online
         ? '<p class="updated">Status: <strong style="color:#3ba55d">● Online</strong></p>'
         : '<p class="updated" style="background:#f8d7da;color:#842029;padding:10px 14px;border-radius:6px;display:inline-block;">🔴 <strong>Bot is currently disconnected from Discord.</strong> It reconnects automatically; if this lasts more than a few minutes, check the support server.</p>';
-    const addLink = ctx.inviteUrl ? `<a href="${esc(ctx.inviteUrl)}">Add Police Bot to your server</a> &nbsp;·&nbsp;` : '';
-    return page('Moderation for Discord', `
-<h1>Police Bot</h1>
+    const addLink = ctx.inviteUrl ? `<a href="${esc(ctx.inviteUrl)}">Add Police to your server</a> &nbsp;·&nbsp;` : '';
+    return page('', `
+<h1>Police</h1>
 ${statusLine}
-<p style="font-size:1.1em;">Police Bot is a Discord moderation bot. It gives your moderators warnings that carry roles and expire on their own, timeouts, kicks and bans, private notes and a full history, plus automatic protection against scam images, spam, and the same message copied across many channels.</p>
+<p style="font-size:1.1em;">Police is a Discord moderation bot. It gives your moderators warnings that carry roles and expire on their own, timeouts, kicks and bans, private notes and a full history, plus automatic protection against scam images, spam, and the same message copied across many channels.</p>
 
 <h2>What it does</h2>
 <ul>
@@ -42,7 +42,7 @@ ${statusLine}
 </ul>
 
 <h2>How it works</h2>
-<p>An admin invites Police Bot, then runs <code>/config access</code> to choose the moderator role and <code>/config set</code> to define warning levels. <code>/help</code> lists every command. Moderators then use commands such as <code>/warning give</code>, <code>/timeout give</code> and <code>/note add</code>, and the automatic protections run in the background using each server's settings.</p>
+<p>An admin invites Police, then runs <code>/config access</code> to choose the moderator role and <code>/config set</code> to define warning levels. <code>/help</code> lists every command. Moderators then use commands such as <code>/warning give</code>, <code>/timeout give</code> and <code>/note add</code>, and the automatic protections run in the background using each server's settings.</p>
 
 <h2>Get started</h2>
 <p>
