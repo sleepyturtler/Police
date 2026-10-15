@@ -6,10 +6,10 @@ const LEGAL_LAST_UPDATED = 'October 10, 2026';
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 function page(title, bodyHtml) {
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} | Police Bot</title>
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} Police</title>
 <link rel="icon" type="image/png" href="${LOGO_URI}">
 <style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1a1a1a;} .brand{display:flex;align-items:center;gap:10px;margin-bottom:20px;} .brand img{width:44px;height:44px;border-radius:8px;} .brand span{font-weight:600;font-size:1.15em;} h1{margin-bottom:4px;} .updated{color:#666;font-size:0.9em;margin-top:0;} h2{margin-top:28px;} a{color:#5865F2;} code{background:#f0f0f3;padding:1px 5px;border-radius:4px;font-size:0.92em;}</style>
-</head><body><div class="brand"><img src="${LOGO_URI}" alt="Police Bot logo"><span>Police Bot</span></div>${bodyHtml}</body></html>`;
+</head><body><div class="brand"><img src="${LOGO_URI}" alt="Police Bot logo"><span>Police</span></div>${bodyHtml}</body></html>`;
 }
 
 function contactLine(ctx) {
