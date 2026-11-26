@@ -2,7 +2,8 @@
 const { EmbedBuilder, MessageFlags } = require('discord.js');
 const { buildNoteViewEmbed, customIdMatches, refreshBtn } = require('../ui/embeds');
 const { hasCommandPermission } = require('../helpers');
-const { activeWarnings, deleteNote, getAllHistory, getNotes } = require('../db');
+const { activeWarnings, deleteNote, getAllHistory, getConfig, getNotes } = require('../db');
+const { levelCounts } = require('../paths');
 
 function matches(interaction) {
     const id = interaction.customId;
@@ -36,12 +37,11 @@ async function handle(interaction) {
             if (!user) return interaction.editReply({ content: '❌ Could not fetch user.', embeds: [], components: [] });
             const [member, history, notes] = await Promise.all([interaction.guild.members.fetch(userId).catch(() => null), getAllHistory(guildId, userId), getNotes(guildId, userId)]);
             const embed = new EmbedBuilder().setColor('#5865F2').setAuthor({ name: user.tag, iconURL: user.displayAvatarURL({ size: 256 }) }).setThumbnail(user.displayAvatarURL({ size: 256 })).addFields({ name: 'Account Created', value: `<t:${Math.floor(user.createdTimestamp/1000)}:F>\n<t:${Math.floor(user.createdTimestamp/1000)}:R>`, inline: true }, { name: 'Joined Server', value: member ? `<t:${Math.floor(member.joinedTimestamp/1000)}:F>\n<t:${Math.floor(member.joinedTimestamp/1000)}:R>` : '*Not in server*', inline: true }).setTimestamp();
-            const activeUserWarnings = [...activeWarnings.values()].filter(w => w.guildId === guildId && w.userId === userId), activeByLevel = {};
-            for (const w of activeUserWarnings) activeByLevel[w.level] = (activeByLevel[w.level] || 0) + 1;
-            embed.addFields({ name: 'Active Warnings', value: Object.keys(activeByLevel).length ? Object.entries(activeByLevel).sort(([a],[b])=>a-b).map(([l,c])=>`Level ${l}: **${c}**`).join('\n') : 'None', inline: true });
-            const warnCounts = {}, timeoutCount = history.filter(e => e.type === 'timeout').length, kickCount = history.filter(e => e.type === 'kick').length, banCount = history.filter(e => e.type === 'ban').length;
-            for (const e of history) if (e.level != null) warnCounts[e.level] = (warnCounts[e.level] || 0) + 1;
-            if (Object.keys(warnCounts).length) embed.addFields({ name: 'Warn History', value: Object.entries(warnCounts).sort(([a],[b])=>a-b).map(([l,c])=>`Level ${l}: **${c}**`).join('\n'), inline: true });
+            const activeUserWarnings = [...activeWarnings.values()].filter(w => w.guildId === guildId && w.userId === userId), warnCfg = await getConfig(guildId);
+            embed.addFields({ name: 'Active Warnings', value: levelCounts(warnCfg, activeUserWarnings).join('\n') || 'None', inline: true });
+            const timeoutCount = history.filter(e => e.type === 'timeout').length, kickCount = history.filter(e => e.type === 'kick').length, banCount = history.filter(e => e.type === 'ban').length;
+            const warnLines = levelCounts(warnCfg, history.filter(e => typeof e.level === 'number'));
+            if (warnLines.length) embed.addFields({ name: 'Warn History', value: warnLines.join('\n'), inline: true });
             const modLines = [...(timeoutCount?[`Timeouts: **${timeoutCount}**`]:[]), ...(kickCount?[`Kicks: **${kickCount}**`]:[]), ...(banCount?[`Bans: **${banCount}**`]:[])];
             if (modLines.length) embed.addFields({ name: 'Mod Actions', value: modLines.join('\n'), inline: true });
             if (notes.length) { const shown = notes.slice(-5); embed.addFields({ name: `Notes (${notes.length})`, value: shown.map(n => `\`${n.id}\` <t:${Math.floor(n.addedAt/1000)}:d> by **${n.addedBy}**\n${n.text.slice(0,100)}${n.text.length>100?'…':''}`).join('\n\n') }); if (notes.length > 5) embed.setFooter({ text: `Showing last 5 of ${notes.length} notes` }); }

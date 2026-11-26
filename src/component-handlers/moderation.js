@@ -2,6 +2,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { formatDuration, hasCommandPermission, logMod } = require('../helpers');
 const { activeWarnings, addHistory, deleteWarning, getConfig } = require('../db');
+const { getPath, multiPath, warningPathId } = require('../paths');
 const { pendingUnwarns, warningTimers } = require('../warnings');
 const { buildWarnlistEmbed, refreshBtn, warnlistRow } = require('../ui/embeds');
 
@@ -81,7 +82,7 @@ async function handle(interaction) {
             if (!userWarnings.length) return interaction.update({ embeds: [new EmbedBuilder().setColor('#00ff00').setTitle('Your Active Warnings').setDescription('You have no active warnings!').setTimestamp()], components: [] });
             const cfg = await getConfig(guildId), embed = new EmbedBuilder().setColor('#FFA500').setTitle('Your Active Warnings').setDescription(`You have ${userWarnings.length} active warning${userWarnings.length>1?'s':''}`).setFooter({ text: 'Warnings are automatically removed when they expire' }).setTimestamp();
             for (const w of userWarnings) {
-                const lc = cfg.levels?.[w.level], name = `Level ${w.level} — ${lc?.roleName||'Unknown Role'}`;
+                const pth = getPath(cfg, warningPathId(w, cfg)), name = `Level ${w.level} — ${w.roleName || pth.levels?.[w.level]?.roleName || 'Unknown Role'}${multiPath(cfg) ? ` (${pth.name})` : ''}`;
                 if (w.isForever) embed.addFields({ name, value: ' **Duration:** Forever\n **Status:** Permanent' });
                 else { const t = w.expiresAt - Date.now(); embed.addFields({ name, value: t <= 0 ? 'Expired (will be removed shortly)' : (() => { const s = Math.floor(t/1000); return `**Time Left:** ${formatDuration(Math.floor(s/86400),Math.floor((s%86400)/3600),Math.floor((s%3600)/60),s%60)}\n**Expires:** <t:${Math.floor(w.expiresAt/1000)}:F>`; })() }); }
             }

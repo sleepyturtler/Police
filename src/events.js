@@ -4,7 +4,7 @@ const { client } = require('./client');
 const { commandBuilders } = require('./commands/definitions');
 const { activeTimeouts, activeWarnings, configCache, deleteActiveTimeout, getConfig, initDB, pool, purgeGuildData, saveConfig, timeoutKey } = require('./db');
 const { banTimers, pendingUnwarns, scheduleBanExpiry, scheduleWarningRemoval, warningTimers } = require('./warnings');
-const { getGlobalScamHashes, scamHashCache } = require('./scam/store');
+const { getGlobalScamHashes, rowToEntry, scamHashCache } = require('./scam/store');
 const { SUPPORT_SERVER_URL } = require('./constants');
 const { keepAlive } = require('./web/server');
 const { spamTracker } = require('./spam/spam');
@@ -34,8 +34,8 @@ client.once('ready', async () => {
             const cutoff = Date.now();
             for (const [key, data] of activeTimeouts.entries()) if (data.expiresAt && data.expiresAt <= cutoff) deleteActiveTimeout(data.guildId, data.userId);
         }, 10 * 60 * 1000);
-        const shRes = await pool.query('SELECT guild_id, id, hash, label, added_by, added_at FROM scam_hashes ORDER BY id');
-        for (const r of shRes.rows) { const arr = scamHashCache.get(r.guild_id) ?? []; arr.push({ id: r.id, hash: r.hash, label: r.label, addedBy: r.added_by, addedAt: r.added_at }); scamHashCache.set(r.guild_id, arr); }
+        const shRes = await pool.query('SELECT guild_id, id, hash, phash, thumb, width, height, label, added_by, added_at FROM scam_hashes ORDER BY id');
+        for (const r of shRes.rows) { const arr = scamHashCache.get(r.guild_id) ?? []; arr.push(rowToEntry(r)); scamHashCache.set(r.guild_id, arr); }
         const loadedGlobalHashes = await getGlobalScamHashes();
         console.log(`✅ Loaded scam hashes for ${scamHashCache.size} guild(s), ${loadedGlobalHashes.length} global`);
         const banRes = await pool.query("SELECT guild_id, user_id, data FROM history WHERE data->>'type' = 'ban' AND data->>'expiresAt' IS NOT NULL ORDER BY id DESC");
@@ -66,11 +66,11 @@ client.once('ready', async () => {
 });
 
 client.on('guildCreate', async guild => {
-    const cfg = await getConfig(guild.id); if (!cfg.levels) saveConfig(guild.id, { levels: {} });
+    const cfg = await getConfig(guild.id); if (!cfg.levels && !cfg.paths) saveConfig(guild.id, { levels: {} });
     try {
         const logs = await guild.fetchAuditLogs({ type: 28, limit: 5 });
         const entry = logs.entries.find(e => e.target?.id === client.user.id && Date.now() - e.createdTimestamp < 60000);
-        if (guild.systemChannel) guild.systemChannel.send({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('👋 Thanks for adding Police Bot!').setDescription(`${entry?.executor?.id ? `<@${entry.executor.id}>, please` : 'An administrator should'} run \`/config access\` to set up command permissions.\n\n**Quick Start:**\n1. \`/config access\` — set the moderator role\n2. \`/config set\` — set up warning levels\n3. \`/warning give\` — start moderating!`).setFooter({ text: 'Use /help to see all commands' })] }).catch(() => {});
+        if (guild.systemChannel) guild.systemChannel.send({ embeds: [new EmbedBuilder().setColor('#5865F2').setTitle('👋 Thanks for adding Police Bot!').setDescription(`${entry?.executor?.id ? `<@${entry.executor.id}>, please` : 'An administrator should'} run \`/config settings\` to set up command permissions.\n\n**Quick Start:**\n1. \`/config settings\` — set the moderator role\n2. \`/config warnings\` — set up warning levels\n3. \`/warning give\` — start moderating!`).setFooter({ text: 'Use /help to see all commands' })] }).catch(() => {});
     } catch (e) { console.error('guildCreate error:', e); }
 });
 

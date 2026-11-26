@@ -1,0 +1,17 @@
+{
+  "name": "Police",
+  "version": "3.0.0",
+  "description": "The best moderation bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["discord", "bot", "moderation", "warnings"],
+  "author": "sleepy",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.19.0",
+    "pg": "^8.11.0",
+    "sharp": "^0.34.5"
+  }
+}

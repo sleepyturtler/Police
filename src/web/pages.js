@@ -42,7 +42,7 @@ ${statusLine}
 </ul>
 
 <h2>How it works</h2>
-<p>An admin invites Police, then runs <code>/config access</code> to choose the moderator role and <code>/config set</code> to define warning levels. <code>/help</code> lists every command. Moderators then use commands such as <code>/warning give</code>, <code>/timeout give</code> and <code>/note add</code>, and the automatic protections run in the background using each server's settings.</p>
+<p>An admin invites Police, then runs <code>/config settings</code> to choose the moderator role and <code>/config warnings</code> to define warning levels. <code>/help</code> lists every command. Moderators then use commands such as <code>/warning give</code>, <code>/timeout give</code> and <code>/note add</code>, and the automatic protections run in the background using each server's settings.</p>
 
 <h2>Get started</h2>
 <p>
@@ -125,7 +125,7 @@ function buildPrivacy(ctx) {
 </ul>
 
 <h2>Messages the Bot sends</h2>
-<p>The Bot sends direct messages to members it acts on, for example to tell them about a warning, timeout, kick, ban or automatic removal. Servers can turn off warning and automatic-removal notifications with <code>/config notifications</code>; notices for kicks, bans and timeouts given by a moderator are always attempted.</p>
+<p>The Bot sends direct messages to members it acts on, for example to tell them about a warning, timeout, kick, ban or automatic removal. Servers can turn off warning and automatic-removal notifications with <code>/config settings</code>; notices for kicks, bans and timeouts given by a moderator are always attempted.</p>
 
 <h2>How we use data</h2>
 <p>Data is used only to run the Bot's moderation features: applying and expiring warnings, showing history and notes to your moderators, and detecting spam and scam images. We do not sell data, use it for advertising, or build profiles from it.</p>

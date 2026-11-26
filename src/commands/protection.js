@@ -2,7 +2,7 @@
 const { MessageFlags } = require('discord.js');
 const { getConfig, saveConfig } = require('../db');
 const { formatDuration, parseDuration } = require('../helpers');
-const { MAX_TIMEOUT_MS } = require('../constants');
+const { CROSSPOST_DEFAULT_IMAGE_THRESHOLD, CROSSPOST_MAX_IMAGE_THRESHOLD, MAX_TIMEOUT_MS } = require('../constants');
 
 async function runSpam(ctx) {
     const { interaction, guildId, E, reply } = ctx;
@@ -31,7 +31,7 @@ async function runSpam(ctx) {
 async function runCrosspost(ctx) {
     const { interaction, guildId, E, reply } = ctx;
     const sub = interaction.options.getSubcommand();
-    const cpEmbed = (cp) => { const s = { enabled: true, count: 3, windowMs: 5*60*1000, timeoutMs: 10*60*1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: 10, ...cp }; return E('#ff6600','Cross-Channel Spam Protection Config').setDescription('Catches the same message or image copy-pasted into multiple different channels (e.g. referral/ad links, unregistered scam screenshots).').addFields({ name: 'Detection', value: s.enabled?'Enabled':'Disabled', inline: true }, { name: 'Trigger', value: `${s.count} channels within ${Math.round(s.windowMs/1000)}s`, inline: true }, { name: 'Text Similarity', value: `${Math.round(s.similarityThreshold*100)}%`, inline: true }, { name: 'Image Matching', value: s.matchImages ? `Enabled (threshold ${s.imageThreshold})` : 'Disabled', inline: true }, { name: 'Delete Messages', value: s.deleteMsg?'Yes':'No', inline: true }, { name: 'Timeout', value: s.timeoutMs?s.timeoutDisplay:'None', inline: true }); };
+    const cpEmbed = (cp) => { const s = { enabled: true, count: 3, windowMs: 5*60*1000, timeoutMs: 10*60*1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: CROSSPOST_DEFAULT_IMAGE_THRESHOLD, ...cp }; s.imageThreshold = Math.min(s.imageThreshold, CROSSPOST_MAX_IMAGE_THRESHOLD); return E('#ff6600','Cross-Channel Spam Protection Config').setDescription('Catches the same message or image copy-pasted into multiple different channels (e.g. referral/ad links, unregistered scam screenshots).').addFields({ name: 'Detection', value: s.enabled?'Enabled':'Disabled', inline: true }, { name: 'Trigger', value: `${s.count} channels within ${Math.round(s.windowMs/1000)}s`, inline: true }, { name: 'Text Similarity', value: `${Math.round(s.similarityThreshold*100)}%`, inline: true }, { name: 'Image Matching', value: s.matchImages ? `Enabled (threshold ${s.imageThreshold})` : 'Disabled', inline: true }, { name: 'Delete Messages', value: s.deleteMsg?'Yes':'No', inline: true }, { name: 'Timeout', value: s.timeoutMs?s.timeoutDisplay:'None', inline: true }); };
     if (sub === 'config') {
         const enabled = interaction.options.getBoolean('enabled'), del = interaction.options.getBoolean('delete'), count = interaction.options.getInteger('count'), window = interaction.options.getInteger('window'), toStr = interaction.options.getString('timeout'), simPct = interaction.options.getInteger('similarity'), matchImages = interaction.options.getBoolean('match_images'), imgThresh = interaction.options.getInteger('image_threshold');
         const cfg = await getConfig(guildId); cfg.crossPostProt ??= {};

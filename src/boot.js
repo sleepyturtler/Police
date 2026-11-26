@@ -1,5 +1,6 @@
 // Entry point: loads every module, then logs in.
 require('./events');
+require('./honeypot/detect');
 require('./scam/detect');
 require('./spam/detect');
 require('./interactions');

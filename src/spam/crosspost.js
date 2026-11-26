@@ -2,6 +2,7 @@
 const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { addHistory, getConfig, saveActiveTimeout } = require('../db');
 const { client } = require('../client');
+const { CROSSPOST_DEFAULT_IMAGE_THRESHOLD } = require('../constants');
 const { logMod } = require('../helpers');
 
 // ── Cross-post protection (same message pasted across many channels) ───────
@@ -19,7 +20,7 @@ setInterval(() => {
     }
 }, 10 * 60 * 1000);
 
-async function getCrossPostConfig(guildId) { const cfg = await getConfig(guildId); return { enabled: true, count: 3, windowMs: 5 * 60 * 1000, windowDisplay: '5m', timeoutMs: 10 * 60 * 1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: 10, ...cfg.crossPostProt }; }
+async function getCrossPostConfig(guildId) { const cfg = await getConfig(guildId); return { enabled: true, count: 3, windowMs: 5 * 60 * 1000, windowDisplay: '5m', timeoutMs: 10 * 60 * 1000, timeoutDisplay: '10m', deleteMsg: true, similarityThreshold: 0.85, matchImages: true, imageThreshold: CROSSPOST_DEFAULT_IMAGE_THRESHOLD, ...cfg.crossPostProt }; }
 
 async function handleCrossPost(guild, author, matchedEntries, cpc, matchType) {
     const guildId = guild.id, key = `${guildId}-${author.id}`;
@@ -49,8 +50,8 @@ async function handleCrossPost(guild, author, matchedEntries, cpc, matchType) {
     const cfg = await getConfig(guildId);
     const E2 = (c, t) => new EmbedBuilder().setColor(c).setTitle(t).setTimestamp();
     const contentValue = matchType === 'image' ? `[image attachment, hash \`${matchedEntries[0]?.imgHash ?? 'unknown'}\`]` : (matchedEntries[0]?.content?.slice(0, 200) || '(empty)');
-    if (cfg.warnDm !== false) author.send({ embeds: [E2('#ff6600','Your messages were removed').setDescription(`You posted the same ${what} across **${distinctChannels}** channels in **${guild.name}**, which was detected as cross-channel spam.`).addFields(...(timedOut ? [{ name: 'Consequence', value: `Timed out for ${cpc.timeoutDisplay}`, inline: true }] : [])).setFooter({ text: 'If you believe this is a mistake, contact a moderator' })] }).catch(() => {});
-    logMod(guild, guildId, E2('#ff6600','Cross-Channel Spam Auto-Removed').addFields({ name: 'User', value: `${author} (${author.tag})`, inline: true }, { name: 'Type', value: matchType === 'image' ? 'Image' : 'Text', inline: true }, { name: 'Channels', value: `${distinctChannels}`, inline: true }, { name: 'Messages Removed', value: `${deletedCount}`, inline: true }, ...(timedOut ? [{ name: 'Timeout', value: cpc.timeoutDisplay, inline: true }] : []), { name: 'Content', value: contentValue }));
+    if (cfg.warnDm !== false) author.send({ embeds: [E2('#ff0000','Your messages were removed').setDescription(`You posted the same ${what} across **${distinctChannels}** channels in **${guild.name}**, which was detected as cross-channel spam.`).addFields(...(timedOut ? [{ name: 'Consequence', value: `Timed out for ${cpc.timeoutDisplay}`, inline: true }] : [])).setFooter({ text: 'If you believe this is a mistake, contact a moderator' })] }).catch(() => {});
+    logMod(guild, guildId, E2('#ff0000','Cross-Channel Spam Auto-Removed').addFields({ name: 'User', value: `${author} (${author.tag})`, inline: true }, { name: 'Type', value: matchType === 'image' ? 'Image' : 'Text', inline: true }, { name: 'Channels', value: `${distinctChannels}`, inline: true }, { name: 'Messages Removed', value: `${deletedCount}`, inline: true }, ...(timedOut ? [{ name: 'Timeout', value: cpc.timeoutDisplay, inline: true }] : []), { name: 'Content', value: contentValue }));
     addHistory(guildId, author.id, { guildId, userId: author.id, userTag: author.tag, type: 'crosspost_remove', reason: `Cross-posted ${what} across ${distinctChannels} channels`, issuedBy: client.user.tag, issuedAt: Date.now() });
 }
 

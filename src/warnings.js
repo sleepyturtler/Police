@@ -3,6 +3,7 @@ const { EmbedBuilder } = require('discord.js');
 const { activeWarnings, addHistory, deleteWarning, getConfig, saveActiveTimeout, saveWarning } = require('./db');
 const { client } = require('./client');
 const { logMod } = require('./helpers');
+const { getPath, multiPath, pathLabel, warningPathId } = require('./paths');
 
 // ── Warning timers ─────────────────────────────────────────────────────────
 const warningTimers = new Map(), pendingUnwarns = new Map(), banTimers = new Map();
@@ -62,40 +63,58 @@ function scheduleBanExpiry(guildId, userId, userTag, expiresAt, reason) {
     schedule(t);
 }
 
-async function applyWarning(guild, member, user, guildId, level, reason, channelId, issuedByTag) {
-    const cfg = await getConfig(guildId), lc = cfg.levels[level], role = guild.roles.cache.get(lc?.roleId);
-    if (!lc || !role) return { error: `Level ${level} config or role not found.` };
+// opts: { pathId, offense }. pathId picks the ladder (the first path if omitted); offense is the label shown to the user and kept in history.
+async function applyWarning(guild, member, user, guildId, level, reason, channelId, issuedByTag, opts = {}) {
+    const cfg = await getConfig(guildId), path = getPath(cfg, opts.pathId), lc = path.levels[level], role = guild.roles.cache.get(lc?.roleId);
+    if (!lc || !role) return { error: `Level ${level} config or role not found${multiPath(cfg) ? ` on ${path.name}` : ''}.` };
     if (role.position >= guild.members.me.roles.highest.position) return { error: `Role hierarchy: my role must be above ${role.name}.` };
     await member.roles.add(role);
-    if (cfg.warnDm !== false) user.send({ embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('⚠️ You Received a Warning').setDescription(`You have been warned in **${guild.name}**.`).addFields({ name: 'Warning Level', value: `${level}`, inline: true }, { name: 'Duration', value: lc.durationDisplay || 'Unknown', inline: true }, { name: 'Reason', value: reason }).setFooter({ text: `Use /mywarnings in ${guild.name} to check when this warning expires` }).setTimestamp()] }).catch(() => {});
-    const base = { guildId, userId: user.id, userTag: user.tag, roleId: role.id, roleName: role.name, level, reason, issuedBy: issuedByTag, issuedAt: Date.now() };
+    const extra = [...(opts.offense ? [{ name: 'Offense', value: opts.offense.slice(0, 200), inline: true }] : []), ...(multiPath(cfg) ? [{ name: 'Path', value: pathLabel(path), inline: true }] : [])];
+    if (cfg.warnDm !== false) user.send({ embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('⚠️ You Received a Warning').setDescription(`You have been warned in **${guild.name}**.`).addFields({ name: 'Warning Level', value: `${level}`, inline: true }, { name: 'Duration', value: lc.durationDisplay || 'Unknown', inline: true }, ...extra, { name: 'Reason', value: reason }).setFooter({ text: `Use /mywarnings in ${guild.name} to check when this warning expires` }).setTimestamp()] }).catch(() => {});
+    const base = { guildId, userId: user.id, userTag: user.tag, roleId: role.id, roleName: role.name, level, reason, issuedBy: issuedByTag, issuedAt: Date.now(), pathId: path.id, pathName: path.name, ...(opts.offense ? { offense: opts.offense } : {}) };
     const key = `${guildId}-${user.id}-${level}-${Date.now()}`;
     if (!lc.isForever) { const expiresAt = Date.now() + lc.durationMs; saveWarning(key, { ...base, expiresAt, channelId, isForever: false }); scheduleWarningRemoval(key, guildId, user.id, role.id, expiresAt, channelId); }
     else saveWarning(key, { ...base, expiresAt: null, channelId, isForever: true });
-    return { success: true, role, config: lc };
+    return { success: true, role, config: lc, pathId: path.id };
 }
 
-async function checkEscalation(guild, member, user, guildId, level, channelId, issuedByTag) {
-    const cfg = await getConfig(guildId), esc = cfg.escalation ?? {}, cap = esc.cap, nextLevel = level + 1;
+// Active warnings a user has at one level of one path.
+const countActive = (cfg, guildId, userId, pathId, level) => [...activeWarnings.values()].filter(w => w.guildId === guildId && w.userId === userId && w.level === level && warningPathId(w, cfg) === pathId).length;
+
+// What issuing one more warning at `level` would do on this path, for the confirmation screen. Null when no rule applies.
+function forecastEscalation(cfg, guildId, userId, pathId, level) {
+    const path = getPath(cfg, pathId), esc = path.escalation ?? {}, nextLevel = level + 1;
+    if (esc.cap != null && nextLevel > esc.cap) return { atCap: true, cap: esc.cap };
+    const toCfg = esc.timeouts?.[nextLevel], threshold = toCfg?.threshold ?? esc.thresholds?.[level];
+    if (!threshold) return null;
+    const count = countActive(cfg, guildId, userId, path.id, level) + 1; // this warning counts too
+    return { count, threshold, nextLevel, willEscalate: count >= threshold, timeout: toCfg?.threshold != null ? toCfg.durationDisplay : null, nextConfigured: !!path.levels[nextLevel] };
+}
+
+// Same rules as before, applied inside one path: only that path's warnings count, and its own thresholds, timeouts and cap apply.
+async function checkEscalation(guild, member, user, guildId, level, channelId, issuedByTag, opts = {}) {
+    const cfg = await getConfig(guildId), path = getPath(cfg, opts.pathId), esc = path.escalation ?? {}, cap = esc.cap, nextLevel = level + 1;
     if (cap != null && nextLevel > cap) return { atCap: true, cap };
-    const count = [...activeWarnings.values()].filter(w => w.guildId === guildId && w.userId === user.id && w.level === level).length;
-    const toCfg = esc.timeouts?.[nextLevel];
+    const count = countActive(cfg, guildId, user.id, path.id, level);
+    const toCfg = esc.timeouts?.[nextLevel], nextCfg = path.levels[nextLevel];
+    // A level that only exists as a timeout step has no role to give, so only the timeout is applied.
+    const giveNext = async () => nextCfg.isTimeoutLevel ? { role: null, config: nextCfg } : applyWarning(guild, member, user, guildId, nextLevel, `Auto-escalated from Level ${level}`, channelId, issuedByTag, { pathId: path.id });
     if (toCfg?.threshold != null) {
         if (count < toCfg.threshold) return { counted: true, count, threshold: toCfg.threshold };
-        if (!cfg.levels[nextLevel]) return { noNextLevel: true, nextLevel };
-        const r = await applyWarning(guild, member, user, guildId, nextLevel, `Auto-escalated from Level ${level}`, channelId, issuedByTag);
+        if (!nextCfg) return { noNextLevel: true, nextLevel };
+        const r = await giveNext();
         if (r.error) return { escalationError: r.error };
         const timeoutOk = await member.timeout(toCfg.durationMs, `Auto-escalated to Level ${nextLevel}`).then(() => true).catch(() => false);
         if (timeoutOk) saveActiveTimeout(guildId, user.id, { guildId, userId: user.id, userTag: user.tag, reason: `Auto-escalated to Level ${nextLevel}`, issuedBy: issuedByTag, issuedAt: Date.now(), expiresAt: Date.now() + toCfg.durationMs, durationDisplay: toCfg.durationDisplay });
-        user.send({ embeds: [new EmbedBuilder().setColor('#ff6600').setTitle('⚠️ You Have Been Timed Out').setDescription(`You were auto-timed-out in **${guild.name}** upon reaching Warning Level ${nextLevel}.`).addFields({ name: 'Timeout Duration', value: toCfg.durationDisplay, inline: true }).setTimestamp()] }).catch(() => {});
-        return { escalated: true, nextLevel, role: r.role, config: r.config, hitCap: cap != null && nextLevel === cap, timedOut: true, timeoutDisplay: toCfg.durationDisplay };
+        user.send({ embeds: [new EmbedBuilder().setColor('#ff0000').setTitle('⚠️ You Have Been Timed Out').setDescription(`You were auto-timed-out in **${guild.name}** upon reaching Warning Level ${nextLevel}.`).addFields({ name: 'Timeout Duration', value: toCfg.durationDisplay, inline: true }).setTimestamp()] }).catch(() => {});
+        return { escalated: true, nextLevel, role: r.role, config: r.config, hitCap: cap != null && nextLevel === cap, timedOut: true, timeoutDisplay: toCfg.durationDisplay, pathId: path.id };
     }
     const threshold = esc.thresholds?.[level]; if (!threshold) return null;
     if (count < threshold) return { counted: true, count, threshold };
-    if (!cfg.levels[nextLevel]) return { noNextLevel: true, nextLevel };
-    const r = await applyWarning(guild, member, user, guildId, nextLevel, `Auto-escalated from Level ${level}`, channelId, issuedByTag);
+    if (!nextCfg || nextCfg.isTimeoutLevel) return { noNextLevel: true, nextLevel };
+    const r = await giveNext();
     if (r.error) return { escalationError: r.error };
-    return { escalated: true, nextLevel, role: r.role, config: r.config, hitCap: cap != null && nextLevel === cap, timedOut: false };
+    return { escalated: true, nextLevel, role: r.role, config: r.config, hitCap: cap != null && nextLevel === cap, timedOut: false, pathId: path.id };
 }
 
-module.exports = { applyWarning, banTimers, checkEscalation, pendingUnwarns, scheduleBanExpiry, scheduleWarningRemoval, warningTimers };
+module.exports = { applyWarning, banTimers, checkEscalation, countActive, forecastEscalation, pendingUnwarns, scheduleBanExpiry, scheduleWarningRemoval, warningTimers };

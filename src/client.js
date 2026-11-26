@@ -1,5 +1,10 @@
 // The single shared Discord client and its cache limits.
 const { Client, GatewayIntentBits, Options } = require('discord.js');
+const { install: installV2 } = require('./ui/v2');
+
+// Every embed the bot sends (channel posts, DMs, replies, edits) is shown as a Components V2 container. This is done once,
+// here, so no call site has to know about it. Interaction replies are covered by wrapInteraction in interactions.js.
+installV2();
 
 // discord.js v14 only caps MessageManager by default (200/channel) — GuildMemberManager and
 // UserManager default to Infinity. Every message author and every member ever resolved via a

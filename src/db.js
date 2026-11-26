@@ -20,6 +20,14 @@ async function initDB() {
         CREATE INDEX IF NOT EXISTS history_guild_user  ON history(guild_id, user_id);
         CREATE INDEX IF NOT EXISTS notes_guild_user    ON notes(guild_id, user_id);
         CREATE INDEX IF NOT EXISTS scam_hashes_guild   ON scam_hashes(guild_id);
+        ALTER TABLE scam_hashes        ADD COLUMN IF NOT EXISTS phash TEXT;
+        ALTER TABLE scam_hashes        ADD COLUMN IF NOT EXISTS thumb BYTEA;
+        ALTER TABLE scam_hashes        ADD COLUMN IF NOT EXISTS width INT;
+        ALTER TABLE scam_hashes        ADD COLUMN IF NOT EXISTS height INT;
+        ALTER TABLE global_scam_hashes ADD COLUMN IF NOT EXISTS phash TEXT;
+        ALTER TABLE global_scam_hashes ADD COLUMN IF NOT EXISTS thumb BYTEA;
+        ALTER TABLE global_scam_hashes ADD COLUMN IF NOT EXISTS width INT;
+        ALTER TABLE global_scam_hashes ADD COLUMN IF NOT EXISTS height INT;
     `);
 }
 

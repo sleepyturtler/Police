@@ -3,6 +3,8 @@ const { EmbedBuilder, MessageFlags } = require('discord.js');
 const { client } = require('./client');
 const { handleComponents } = require('./component-handlers');
 const { hasCommandPermission } = require('./helpers');
+const { pathLabel, pathList } = require('./paths');
+const { wrapInteraction } = require('./ui/v2');
 const { getConfig } = require('./db');
 const { runHelp, runInvite } = require('./commands/general');
 const { runGlobalHashes, runScam } = require('./commands/scam');
@@ -11,17 +13,30 @@ const { runMyWarnings, runWarningGive, runWarningHistory, runWarningList, runWar
 const { runBan, runKick, runTimeout } = require('./commands/moderation');
 const { runNote, runUserinfo } = require('./commands/records');
 const { runCrosspost, runSpam } = require('./commands/protection');
+const { runSting } = require('./commands/sting');
 const { runMessages } = require('./commands/messages');
+
+// Suggests warning paths for the `path` option of /warning give, /config warnings and /escalation. Discord wants an answer within 3 seconds.
+async function handleAutocomplete(interaction) {
+  try {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== 'path' || !interaction.guild) return await interaction.respond([]);
+    const cfg = await getConfig(interaction.guild.id), q = String(focused.value).toLowerCase();
+    await interaction.respond(pathList(cfg).filter(p => p.name.toLowerCase().includes(q) || p.id.includes(q)).slice(0, 25).map(p => ({ name: pathLabel(p).slice(0, 100), value: p.id })));
+  } catch { await interaction.respond([]).catch(() => {}); }
+}
 
 client.on('interactionCreate', async interaction => {
   try {
+    wrapInteraction(interaction); // every reply, update and edit below goes out as a V2 container
+    if (interaction.isAutocomplete()) { await handleAutocomplete(interaction); return; }
     if (!interaction.isChatInputCommand()) { await handleComponents(interaction); return; }
     const { commandName, guildId } = interaction;
     if (!interaction.guild) return interaction.reply({ content: '❌ Server only.', flags: [MessageFlags.Ephemeral] });
-    const restricted = ['config','warning','timeout','kick','ban','note','userinfo','escalation','scam','spam','crosspost','messages'];
+    const restricted = ['config','warning','timeout','kick','ban','note','userinfo','escalation','scam','spam','crosspost','messages','sting'];
     if (restricted.includes(commandName) && !await hasCommandPermission(interaction, guildId)) {
         const cfg = await getConfig(guildId);
-        return interaction.reply({ content: `❌ No permission.\n\n**Required:** Administrator OR ${cfg.accessRoleId ? `<@&${cfg.accessRoleId}>` : 'no role configured'}\n\nAsk an admin to run \`/config access\`.`, flags: [MessageFlags.Ephemeral] });
+        return interaction.reply({ content: `❌ No permission.\n\n**Required:** Administrator OR ${cfg.accessRoleId ? `<@&${cfg.accessRoleId}>` : 'no role configured'}\n\nAsk an admin to run \`/config settings\`.`, flags: [MessageFlags.Ephemeral] });
     }
     const E = (color, title) => new EmbedBuilder().setColor(color).setTitle(title).setTimestamp();
     const reply = (opts) => {
@@ -47,6 +62,7 @@ client.on('interactionCreate', async interaction => {
     else if (commandName === 'spam') await runSpam(ctx);
     else if (commandName === 'crosspost') await runCrosspost(ctx);
     else if (commandName === 'messages') await runMessages(ctx);
+    else if (commandName === 'sting') await runSting(ctx);
     else if (commandName === 'escalation') await runEscalation(ctx);
   } catch (error) {
       if (error?.code === 40060) return;

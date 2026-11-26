@@ -1,6 +1,7 @@
 // /timeout, /kick and /ban.
 const { ActionRowBuilder, MessageFlags, PermissionFlagsBits, StringSelectMenuBuilder } = require('discord.js');
-const { bulkDeleteInRange, formatDuration, logMod, parseDuration } = require('../helpers');
+const { DELETE_MANUAL_BUDGET_MS } = require('../constants');
+const { formatDuration, logMod, parseDuration, purgeChannels } = require('../helpers');
 const { MAX_TIMEOUT_MS } = require('../constants');
 const { addHistory, deleteActiveTimeout, saveActiveTimeout } = require('../db');
 const { scheduleBanExpiry } = require('../warnings');
@@ -22,10 +23,10 @@ async function runTimeout(ctx) {
             await member.timeout(dur.totalMs, reason);
             const dd = formatDuration(dur.days, dur.hours, dur.minutes, dur.seconds), exTs = Math.floor((Date.now()+dur.totalMs)/1000);
             saveActiveTimeout(guildId, user.id, { guildId, userId: user.id, userTag: user.tag, reason, issuedBy: interaction.user.tag, issuedAt: Date.now(), expiresAt: Date.now() + dur.totalMs, durationDisplay: dd });
-            logMod(interaction.guild, guildId, E('#ff6600','Member Timed Out').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason }, { name: 'Moderator', value: `${interaction.user}` }));
-            user.send({ embeds: [E('#ff6600','You Have Been Timed Out').setDescription(`You were timed out in **${interaction.guild.name}**.`).addFields({ name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason })] }).catch(() => {});
+            logMod(interaction.guild, guildId, E('#ff0000','Member Timed Out').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason }, { name: 'Moderator', value: `${interaction.user}` }));
+            user.send({ embeds: [E('#ff0000','You Have Been Timed Out').setDescription(`You were timed out in **${interaction.guild.name}**.`).addFields({ name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason })] }).catch(() => {});
             addHistory(guildId, user.id, { guildId, userId: user.id, userTag: user.tag, type: 'timeout', reason, issuedBy: interaction.user.tag, issuedAt: Date.now(), duration: dd });
-            await reply({ embeds: [E('#ff6600','Timeout Applied').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason }, { name: 'Issued by', value: `${interaction.user}` })] });
+            await reply({ embeds: [E('#ff0000','Timeout Applied').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: dd, inline: true }, { name: 'Expires', value: `<t:${exTs}:R>`, inline: true }, { name: 'Reason', value: reason }, { name: 'Issued by', value: `${interaction.user}` })] });
         } catch (e) { console.error(e); await reply('❌ Failed to apply timeout.'); }
     } else {
         if (!member.communicationDisabledUntilTimestamp || member.communicationDisabledUntilTimestamp < Date.now()) return reply(`❌ ${user} is not currently timed out.`);
@@ -50,12 +51,12 @@ async function runKick(ctx) {
     if (member.roles.highest.position >= botMember.roles.highest.position) return reply('❌ Cannot kick this user — their role is equal to or above mine.');
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
     try {
-        user.send({ embeds: [E('#ff6600','You have been kicked').setDescription(`You were kicked from **${interaction.guild.name}**.`).addFields({ name: 'Reason', value: reason })] }).catch(() => {});
+        user.send({ embeds: [E('#ff0000','You have been kicked').setDescription(`You were kicked from **${interaction.guild.name}**.`).addFields({ name: 'Reason', value: reason })] }).catch(() => {});
         await member.kick(reason);
         deleteActiveTimeout(guildId, user.id);
         addHistory(guildId, user.id, { guildId, userId: user.id, userTag: user.tag, type: 'kick', reason, issuedBy: interaction.user.tag, issuedAt: Date.now() });
-        logMod(interaction.guild, guildId, E('#ff6600','Member Kicked').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Moderator', value: `${interaction.user}`, inline: true }, { name: 'Reason', value: reason }));
-        await reply({ embeds: [E('#ff6600','Member Kicked').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Kicked by', value: `${interaction.user}` })] });
+        logMod(interaction.guild, guildId, E('#ff0000','Member Kicked').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Moderator', value: `${interaction.user}`, inline: true }, { name: 'Reason', value: reason }));
+        await reply({ embeds: [E('#ff0000','Member Kicked').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Reason', value: reason }, { name: 'Kicked by', value: `${interaction.user}` })] });
     } catch (e) { console.error(e); await reply('❌ Failed to kick user.'); }
 }
 
@@ -81,22 +82,23 @@ async function runBan(ctx) {
             addHistory(guildId, user.id, { guildId, userId: user.id, userTag: user.tag, type: 'ban', reason, issuedBy: interaction.user.tag, issuedAt: Date.now(), deleteDays, expiresAt });
             if (expiresAt) scheduleBanExpiry(guildId, user.id, user.tag, expiresAt, reason);
             // Time-based message deletion across all channels
-            let deletedMsgCount = 0;
+            let deletedMsgCount = 0, delIncomplete = false;
             if (delMsgDur) {
                 const since = Date.now() - delMsgDur.totalMs;
                 const channels = interaction.guild.channels.cache.filter(c => c.isTextBased() && c.permissionsFor(interaction.guild.members.me).has(PermissionFlagsBits.ManageMessages));
-                for (const ch of channels.values()) deletedMsgCount += await bulkDeleteInRange(ch, { userId: user.id, since }).catch(() => 0);
+                const out = await purgeChannels(channels.values(), { userId: user.id, since, deadline: Date.now() + DELETE_MANUAL_BUDGET_MS });
+                deletedMsgCount = out.deleted; delIncomplete = out.capped.length > 0 || out.skipped.length > 0 || out.errors.length > 0 || out.tooOld > 0;
             }
             const delDisplay = delMsgDur ? formatDuration(delMsgDur.days, delMsgDur.hours, delMsgDur.minutes, delMsgDur.seconds) : null;
-            logMod(interaction.guild, guildId, E('#ff0000','Member Banned').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Moderator', value: `${interaction.user}`, inline: true }, { name: 'Duration', value: dd || 'Permanent', inline: true }, ...(exTs ? [{ name: 'Expires', value: `<t:${exTs}:R>`, inline: true }] : []), { name: 'Messages Deleted', value: deleteDays ? `${deleteDays} day(s) via Discord` : delDisplay ? `${deletedMsgCount} msgs in last ${delDisplay}` : 'None', inline: true }, { name: 'Reason', value: reason }));
-            await reply({ embeds: [E('#ff0000','Member Banned').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: dd || 'Permanent', inline: true }, ...(exTs ? [{ name: 'Expires', value: `<t:${exTs}:R>`, inline: true }] : []), { name: 'Messages Deleted', value: deleteDays ? `${deleteDays} day(s) via Discord` : delDisplay ? `${deletedMsgCount} msgs in last ${delDisplay}` : 'None', inline: true }, { name: 'Reason', value: reason }, { name: 'Banned by', value: `${interaction.user}` })] });
+            logMod(interaction.guild, guildId, E('#ff0000','Member Banned').addFields({ name: 'User', value: `${user} (${user.tag})`, inline: true }, { name: 'Moderator', value: `${interaction.user}`, inline: true }, { name: 'Duration', value: dd || 'Permanent', inline: true }, ...(exTs ? [{ name: 'Expires', value: `<t:${exTs}:R>`, inline: true }] : []), { name: 'Messages Deleted', value: deleteDays ? `${deleteDays} day(s) via Discord` : delDisplay ? `${deletedMsgCount} msgs in last ${delDisplay}${delIncomplete ? ' (incomplete, run /messages purge)' : ''}` : 'None', inline: true }, { name: 'Reason', value: reason }));
+            await reply({ embeds: [E('#ff0000','Member Banned').addFields({ name: 'User', value: `${user}`, inline: true }, { name: 'Duration', value: dd || 'Permanent', inline: true }, ...(exTs ? [{ name: 'Expires', value: `<t:${exTs}:R>`, inline: true }] : []), { name: 'Messages Deleted', value: deleteDays ? `${deleteDays} day(s) via Discord` : delDisplay ? `${deletedMsgCount} msgs in last ${delDisplay}${delIncomplete ? ' (incomplete, run /messages purge)' : ''}` : 'None', inline: true }, { name: 'Reason', value: reason }, { name: 'Banned by', value: `${interaction.user}` })] });
         } catch (e) { console.error(e); await reply('❌ Failed to ban user.'); }
     } else {
         await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
         const bans = await interaction.guild.bans.fetch().catch(() => null);
         if (!bans || !bans.size) return reply('📋 There are no banned users in this server.');
         const list = [...bans.values()];
-        const embed = E('#ff0000','🔓 Unban a User').setDescription(`This server has **${list.length}** banned user${list.length>1?'s':''}. Select one below to unban.`);
+        const embed = E('#5865F2','🔓 Unban a User').setDescription(`This server has **${list.length}** banned user${list.length>1?'s':''}. Select one below to unban.`);
         for (const b of list.slice(0, 25)) embed.addFields({ name: b.user.tag, value: `Reason: ${(b.reason || 'No reason provided').slice(0,200)}` });
         if (list.length > 25) embed.setFooter({ text: `Showing first 25 of ${list.length}` });
         const options = list.slice(0, 25).map(b => ({ label: b.user.tag.slice(0,100), description: `ID: ${b.user.id}`, value: b.user.id }));
